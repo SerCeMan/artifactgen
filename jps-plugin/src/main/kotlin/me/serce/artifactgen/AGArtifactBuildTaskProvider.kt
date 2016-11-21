@@ -18,6 +18,7 @@ import org.jetbrains.jps.model.artifact.JpsArtifact
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
+
 class AGArtifactBuildTaskProvider : ArtifactBuildTaskProvider() {
     override fun createArtifactBuildTasks(artifact: JpsArtifact, buildPhase: ArtifactBuildPhase): List<BuildTask> {
         if(buildPhase == ArtifactBuildPhase.PRE_PROCESSING) {
@@ -38,10 +39,10 @@ class AgBuildTask(val ext: ModuleArtifactExt) : BuildTask() {
         val project = context.projectDescriptor.project
 
         try {
-            val commandLine = listOf("bash", "-c", ext.cmd)
+            val commandLine = listOf("/usr/local/bin/bash", "-c", "'${ext.cmd}'")
             val process = ProcessBuilder(commandLine).start()
             val commandLineString = StringUtil.join(commandLine, " ")
-            if (LOG.isDebugEnabled()) {
+            if (LOG.isDebugEnabled) {
                 LOG.debug("Starting ant target:" + commandLineString)
             }
             val handler = BaseOSProcessHandler(process, commandLineString, null)

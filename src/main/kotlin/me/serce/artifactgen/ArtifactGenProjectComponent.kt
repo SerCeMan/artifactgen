@@ -2,13 +2,10 @@ package me.serce.artifactgen
 
 import com.intellij.ProjectTopics
 import com.intellij.lang.ant.config.AntConfiguration
-import com.intellij.lang.ant.config.impl.artifacts.AntArtifactPreProcessingPropertiesProvider
-import com.intellij.lang.ant.config.impl.artifacts.AntArtifactProperties
 import com.intellij.openapi.application.Result
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.components.*
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.fileTypes.StdFileTypes
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.ModuleAdapter
@@ -16,8 +13,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.*
 import com.intellij.openapi.roots.libraries.Library
 import com.intellij.openapi.roots.ui.configuration.DefaultModulesProvider
-import com.intellij.packaging.artifacts.ArtifactManager
-import com.intellij.packaging.artifacts.ArtifactTemplate
+import com.intellij.packaging.artifacts.*
 import com.intellij.packaging.elements.ArtifactRootElement
 import com.intellij.packaging.elements.CompositePackagingElement
 import com.intellij.packaging.elements.PackagingElementFactory
@@ -26,21 +22,24 @@ import com.intellij.packaging.impl.artifacts.PlainArtifactType
 import com.intellij.packaging.impl.elements.LibraryPackagingElement
 import com.intellij.packaging.impl.elements.ManifestFileUtil
 import com.intellij.packaging.impl.elements.ProductionModuleOutputElementType
-import com.intellij.psi.PsiFileFactory
-import com.intellij.psi.impl.file.PsiDirectoryFactory
+import com.intellij.packaging.ui.ArtifactEditorContext
+import com.intellij.packaging.ui.ArtifactPropertiesEditor
 import com.intellij.util.CommonProcessors
 import com.intellij.util.PathUtil
 import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.xmlb.XmlSerializerUtil
 import java.util.*
+import javax.swing.JLabel
 import javax.swing.SwingUtilities
 
 
-data class Options(var enabled: Boolean = false,
-                   var modules: List<String> = emptyList(),
-                   var preprocessing: List<ModuleArtifactProps> = emptyList())
+class Options() {
+    var enabled: Boolean = false
+    var modules: List<String> = arrayListOf()
+    var preprocessing: List<ModuleArtifactProps> = arrayListOf()
+}
 
-@State(name = "artifactgen", storages = arrayOf(Storage(StoragePathMacros.WORKSPACE_FILE)))
+@State(name = "ArtifactGen", storages = arrayOf(Storage("artifactgen.xml")))
 class ArtifactGenProjectComponent(val project: Project,
                                   val moduleManager: ModuleManager,
                                   val artifactManager: ArtifactManager) :
@@ -48,12 +47,16 @@ class ArtifactGenProjectComponent(val project: Project,
 
     val LOG = Logger.getInstance(javaClass)
     val modulesProvider = DefaultModulesProvider.createForProject(project)
-    val antConfiguration = AntConfiguration.getInstance(project)
     var connection: MessageBusConnection? = null
     var options = Options()
 
-    override fun getState() = options
-    override fun loadState(state: Options) = XmlSerializerUtil.copyBean(state, options)
+    override fun getState(): Options {
+        return options
+    }
+
+    override fun loadState(state: Options) {
+        options = state
+    }
 
 
     override fun projectOpened() {
@@ -124,37 +127,15 @@ class ArtifactGenProjectComponent(val project: Project,
                     artifact.isBuildOnMake = true
                     artifact.outputPath = "${CompilerModuleExtension.getInstance(module)?.compilerOutputPath?.parent?.path ?: throw IllegalArgumentException()}/dependency"
 
-                    if(includePreprocessing.isNotEmpty()) {
+                    if (includePreprocessing.isNotEmpty()) {
                         val preprModule = includePreprocessing.first()
                         val harness = moduleManager.findModuleByName(preprModule.name)?.moduleFile?.parent
                         if (harness != null && harness.exists()) {
-                            if (antConfiguration.buildFiles.isEmpty()) {
-                                val psiFile = PsiFileFactory.getInstance(project).createFileFromText("build.xml", StdFileTypes.XML,
-                                        """
-<project name="harness">
-  <target name="file-checks">
-    <available file="target/classes/static.zip"  property="first.static"/>
-  </target>
-
-  <target name="process" depends="file-checks" unless="first.static">
-    <exec dir="." executable="sh">
-      <arg line="-c 'mvn process-classes'"/>
-    </exec>
-  </target>
-</project>
-""")
-                                val dir = PsiDirectoryFactory.getInstance(project).createDirectory(harness)
-                                dir.add(psiFile)
-                                antConfiguration.addBuildFile(dir.findFile("build.xml")!!.virtualFile)
-                            }
-
-                            val harnessXml = harness.findChild("build.xml")!!
-                            val antPreprocessingProvier = AntArtifactPreProcessingPropertiesProvider.getInstance()
-                            val props = antPreprocessingProvier.createProperties(artifact.artifactType) as AntArtifactProperties
-                            props.isEnabled = true
-                            props.targetName = "process"
-                            props.fileUrl = harnessXml.url
-                            artifact.setProperties(antPreprocessingProvier, props)
+                            val propsProvider = AGArtifactPropertiesProvider.getInstance()
+                            artifact.setProperties(propsProvider, propsProvider.createProperties(artifact.artifactType).apply {
+                                this.name = preprModule.name
+                                this.cmd = preprModule.cmd
+                            })
                         }
                     }
 
@@ -188,4 +169,46 @@ class ArtifactGenProjectComponent(val project: Project,
     }
 
     override fun getComponentName() = "ArtifactGen"
+}
+
+
+class AGArtifactPropertiesProvider : ArtifactPropertiesProvider("ag-preprocessing") {
+    companion object {
+        fun getInstance() = ArtifactPropertiesProvider.EP_NAME.findExtension(AGArtifactPropertiesProvider::class.java)
+    }
+
+    override fun createProperties(artifactType: ArtifactType): AGArtifactProperties {
+        return AGArtifactProperties()
+    }
+}
+
+class AGArtifactProperties(var props: ModuleArtifactProps = ModuleArtifactProps()) :
+        ArtifactProperties<ModuleArtifactProps>(), ModuleArtifactPropDef by props {
+
+    override fun createEditor(context: ArtifactEditorContext): ArtifactPropertiesEditor {
+        return AGArtifactPropertiesEditor()
+    }
+
+    override fun getState() = props
+
+    override fun loadState(state: ModuleArtifactProps) {
+        props = state
+    }
+}
+
+class AGArtifactPropertiesEditor : ArtifactPropertiesEditor() {
+    override fun isModified() = false
+
+    override fun getTabName() = "artifactgen"
+
+    override fun disposeUIResources() {
+    }
+
+    override fun apply() {
+    }
+
+    override fun createComponent() = JLabel("artifactgen label")
+
+    override fun reset() {
+    }
 }
