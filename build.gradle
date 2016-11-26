@@ -51,6 +51,14 @@ allprojects {
     }
 }
 
+
+release {
+    newVersionCommitMessage = '[ArtifactGen Release] - '
+    preTagCommitMessage = '[ArtifactGen Release] - pre tag commit: '
+    buildTasks = ['buildPlugin']
+}
+
+
 dependencies {
     compile project(':jps-plugin')
 }
