@@ -19,7 +19,7 @@
 
     <project-components>
         <component>
-            <implementation-class>me.serce.artifactgen.ArtifactGenProjectComponent</implementation-class>
+            <implementation-class>me.serce.artifactgen.AGProjectComponent</implementation-class>
         </component>
     </project-components>
 

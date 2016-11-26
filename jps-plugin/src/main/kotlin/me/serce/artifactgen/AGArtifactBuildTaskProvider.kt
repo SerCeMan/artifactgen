@@ -21,9 +21,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class AGArtifactBuildTaskProvider : ArtifactBuildTaskProvider() {
     override fun createArtifactBuildTasks(artifact: JpsArtifact, buildPhase: ArtifactBuildPhase): List<BuildTask> {
-        if(buildPhase == ArtifactBuildPhase.PRE_PROCESSING) {
-            val ext: ModuleArtifactExt = artifact.container.getChild(AGPREPROCESSING_ROLE)
-            if(ext.cmd.isNotEmpty() && ext.name.isNotEmpty()) {
+        if (buildPhase == ArtifactBuildPhase.PRE_PROCESSING) {
+            val ext: ModuleArtifactExt? = artifact.container.getChild(AGPREPROCESSING_ROLE)
+            if (ext != null && ext.cmd.isNotEmpty() && ext.name.isNotEmpty()) {
                 return listOf(AgBuildTask(ext))
             }
         }
@@ -32,33 +32,36 @@ class AGArtifactBuildTaskProvider : ArtifactBuildTaskProvider() {
 }
 
 class AgBuildTask(val ext: ModuleArtifactExt) : BuildTask() {
-    val BUILDER_NAME = "mvn"
+    val BUILDER_NAME = "artifactgen"
     val LOG = Logger.getInstance(AgBuildTask::class.java)
 
     override fun build(context: CompileContext) {
-        val project = context.projectDescriptor.project
-
         try {
-            val commandLine = listOf("/usr/local/bin/bash", "-c", "'${ext.cmd}'")
+            val commandLine = listOf("bash", "-c", ext.cmd)
             val process = ProcessBuilder(commandLine).start()
             val commandLineString = StringUtil.join(commandLine, " ")
             if (LOG.isDebugEnabled) {
-                LOG.debug("Starting ant target:" + commandLineString)
+                LOG.debug("Starting artifactgen target:" + commandLineString)
             }
             val handler = BaseOSProcessHandler(process, commandLineString, null)
             val hasErrors = AtomicBoolean()
-            val errorOutput = StringBuilder()
             handler.addProcessListener(object : ProcessAdapter() {
-                override fun onTextAvailable(event: ProcessEvent?, outputType: Key<*>?) {
-                    if (outputType === ProcessOutputTypes.STDERR) {
-                        errorOutput.append(event!!.text)
+                private val stdErr = StringBuilder()
+                private val stdOut = StringBuilder()
+
+                override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
+                    when(outputType) {
+                        ProcessOutputTypes.STDERR -> stdErr.append(event.text)
+                        ProcessOutputTypes.STDOUT -> stdOut.append(event.text)
                     }
                 }
 
-                override fun processTerminated(event: ProcessEvent?) {
-                    val exitCode = event!!.exitCode
+                override fun processTerminated(event: ProcessEvent) {
+                    val exitCode = event.exitCode
                     if (exitCode != 0) {
-                        context.processMessage(CompilerMessage(BUILDER_NAME, BuildMessage.Kind.ERROR, errorOutput.toString()))
+                        context.processMessage(CompilerMessage(BUILDER_NAME, BuildMessage.Kind.ERROR, stdOut.toString()))
+                        context.processMessage(CompilerMessage(BUILDER_NAME, BuildMessage.Kind.ERROR, stdErr.toString()))
+                        context.processMessage(CompilerMessage(BUILDER_NAME, BuildMessage.Kind.ERROR, "Cannot run '${ext.cmd}'"))
                         hasErrors.set(true)
                     }
                 }
@@ -72,10 +75,4 @@ class AgBuildTask(val ext: ModuleArtifactExt) : BuildTask() {
             throw ProjectBuildException(e)
         }
     }
-
-    private fun reportError(context: CompileContext, text: String) {
-        context.processMessage(CompilerMessage(BUILDER_NAME, BuildMessage.Kind.ERROR,
-                "Cannot run '$ext' target: $text"))
-    }
-
 }

@@ -1,10 +1,12 @@
 package me.serce.artifactgen
 
 import com.intellij.ProjectTopics
-import com.intellij.lang.ant.config.AntConfiguration
 import com.intellij.openapi.application.Result
 import com.intellij.openapi.application.WriteAction
-import com.intellij.openapi.components.*
+import com.intellij.openapi.components.AbstractProjectComponent
+import com.intellij.openapi.components.PersistentStateComponent
+import com.intellij.openapi.components.State
+import com.intellij.openapi.components.Storage
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
@@ -20,14 +22,13 @@ import com.intellij.packaging.elements.PackagingElementFactory
 import com.intellij.packaging.impl.artifacts.ArtifactUtil
 import com.intellij.packaging.impl.artifacts.PlainArtifactType
 import com.intellij.packaging.impl.elements.LibraryPackagingElement
-import com.intellij.packaging.impl.elements.ManifestFileUtil
 import com.intellij.packaging.impl.elements.ProductionModuleOutputElementType
 import com.intellij.packaging.ui.ArtifactEditorContext
 import com.intellij.packaging.ui.ArtifactPropertiesEditor
 import com.intellij.util.CommonProcessors
 import com.intellij.util.PathUtil
 import com.intellij.util.messages.MessageBusConnection
-import com.intellij.util.xmlb.XmlSerializerUtil
+import java.io.File
 import java.util.*
 import javax.swing.JLabel
 import javax.swing.SwingUtilities
@@ -35,14 +36,21 @@ import javax.swing.SwingUtilities
 
 class Options() {
     var enabled: Boolean = false
-    var modules: List<String> = arrayListOf()
+    var modules: List<ModuleDef> = arrayListOf()
     var preprocessing: List<ModuleArtifactProps> = arrayListOf()
 }
 
+class ModuleDef {
+    var name: String = ""
+    var output: String? = null
+}
+
 @State(name = "ArtifactGen", storages = arrayOf(Storage("artifactgen.xml")))
-class ArtifactGenProjectComponent(val project: Project,
-                                  val moduleManager: ModuleManager,
-                                  val artifactManager: ArtifactManager) :
+class AGProjectComponent(val project: Project,
+                         val projectRootManager: ProjectRootManager,
+                         val moduleManager: ModuleManager,
+                         val artifactManager: ArtifactManager,
+                         val factory: PackagingElementFactory) :
         AbstractProjectComponent(project), PersistentStateComponent<Options> {
 
     val LOG = Logger.getInstance(javaClass)
@@ -50,29 +58,30 @@ class ArtifactGenProjectComponent(val project: Project,
     var connection: MessageBusConnection? = null
     var options = Options()
 
-    override fun getState(): Options {
-        return options
-    }
-
+    override fun getState() = options
     override fun loadState(state: Options) {
         options = state
     }
 
 
     override fun projectOpened() {
-        fun rebuildArtifactDef() {
+        fun rebuildArtifact() {
             if (state.enabled) {
-                val modules = moduleManager.modules.filter { it.name in state.modules }
-                rebuildArtifactDefs(modules)
+                for (moduleDef in state.modules) {
+                    val module = moduleManager.modules.find { it.name == moduleDef.name }
+                    if(module != null) {
+                        rebuildArtifactDef(moduleDef, module)
+                    }
+                }
             }
         }
 
         val conn = project.messageBus.connect(project)
         conn.subscribe(ProjectTopics.MODULES, object : ModuleAdapter() {
-            override fun moduleAdded(project: Project, module: Module) = rebuildArtifactDef()
+            override fun moduleAdded(project: Project, module: Module) = rebuildArtifact()
         })
         conn.subscribe(ProjectTopics.PROJECT_ROOTS, object : ModuleRootAdapter() {
-            override fun rootsChanged(event: ModuleRootEvent) = rebuildArtifactDef()
+            override fun rootsChanged(event: ModuleRootEvent) = rebuildArtifact()
         })
         connection = conn
     }
@@ -81,39 +90,42 @@ class ArtifactGenProjectComponent(val project: Project,
         connection?.disconnect()
     }
 
-    private fun rebuildArtifactDefs(modules: List<Module>) = modules.forEach { rebuildArtifactDef(it) }
-
-    private fun rebuildArtifactDef(module: Module) {
+    private fun rebuildArtifactDef(def: ModuleDef, module: Module) {
         val name = module.name
 
-        val factory = PackagingElementFactory.getInstance()
-        val archive = factory.createArchive(ArtifactUtil.suggestArtifactFileName(name) + ".jar")
-
-        val orderEnumerator = ProjectRootManager.getInstance(project).orderEntries(moduleManager.modules.toList()).productionOnly()
-
-        val libraries = HashSet<Library>()
+        val archive = factory.createArchive(module.jarName())
+        val orderEnumerator = projectRootManager.orderEntries(listOf(module)).productionOnly()
         val includePreprocessing = ArrayList<ModuleArtifactProps>()
         val root = factory.createArtifactRootElement()
-        val enumerator = orderEnumerator.using(modulesProvider).withoutSdk().runtimeOnly().recursively()
-        enumerator.forEachLibrary(CommonProcessors.CollectProcessor(libraries))
-        enumerator.forEachModule { module ->
-            if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, module)) {
-                val moduleArchive = factory.createArchive(ArtifactUtil.suggestArtifactFileName(module.name) + ".jar")
-                moduleArchive.addOrFindChild(factory.createModuleOutput(module))
-                root.addOrFindChild(moduleArchive)
+        val libraries = HashSet<Library>()
 
-                state.preprocessing.filter { it.name == module.name }.forEach {
-                    includePreprocessing.add(it)
+        orderEnumerator.using(modulesProvider)
+                .withoutSdk()
+                .runtimeOnly()
+                .recursively().apply {
+
+            forEachLibrary(CommonProcessors.CollectProcessor(libraries))
+
+            forEachModule { module ->
+                if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, module)) {
+                    val moduleArchive = factory.createArchive(module.jarName())
+                    moduleArchive.addOrFindChild(factory.createModuleOutput(module))
+                    root.addOrFindChild(moduleArchive)
+
+                    state.preprocessing
+                            .filter { it.name == module.name }
+                            .forEach {
+                                includePreprocessing.add(it)
+                            }
                 }
+                true
             }
-            true
         }
 
-        val artifactName = name + ":jar"
-
-        val classpath = ArrayList<String>()
         root.addOrFindChild(archive)
-        addLibraries(libraries, root, archive, classpath)
+        addLibraries(libraries, root, archive)
+
+        val artifactName = "$name:jar"
         val config = ArtifactTemplate.NewArtifactConfiguration(root, artifactName, PlainArtifactType.getInstance())
 
         SwingUtilities.invokeLater {
@@ -125,7 +137,17 @@ class ArtifactGenProjectComponent(val project: Project,
                             .forEach { artifactModel.removeArtifact(it) }
                     val artifact = artifactModel.addArtifact(config.artifactName, config.artifactType, config.rootElement)
                     artifact.isBuildOnMake = true
-                    artifact.outputPath = "${CompilerModuleExtension.getInstance(module)?.compilerOutputPath?.parent?.path ?: throw IllegalArgumentException()}/dependency"
+
+                    val outputPath = def.output ?: CompilerModuleExtension.getInstance(module)
+                            ?.compilerOutputPointer
+                            ?.url
+                            ?.let { url -> "${File(url).parentFile.absolutePath}/dependency" }
+                    if (outputPath == null) {
+                        return
+                    } else {
+                        File(outputPath).mkdirs()
+                    }
+                    artifact.outputPath = outputPath
 
                     if (includePreprocessing.isNotEmpty()) {
                         val preprModule = includePreprocessing.first()
@@ -145,24 +167,22 @@ class ArtifactGenProjectComponent(val project: Project,
         }
     }
 
-    private fun addLibraries(libraries: Set<Library>, root: ArtifactRootElement<*>, archive: CompositePackagingElement<*>,
-                             classpath: MutableList<String>) {
-        val factory = PackagingElementFactory.getInstance()
+    private fun addLibraries(libraries: Set<Library>,
+                             root: ArtifactRootElement<*>,
+                             archive: CompositePackagingElement<*>) {
         for (library in libraries) {
             if (LibraryPackagingElement.getKindForLibrary(library).containsDirectoriesWithClasses()) {
                 for (classesRoot in library.getFiles(OrderRootType.CLASSES)) {
                     if (classesRoot.isInLocalFileSystem) {
-                        archive.addOrFindChild(factory.createDirectoryCopyWithParentDirectories(classesRoot.path, "/"))
+                        val dir = factory.createDirectoryCopyWithParentDirectories(classesRoot.path, "/")
+                        archive.addOrFindChild(dir)
                     } else {
                         val child = factory.createFileCopyWithParentDirectories(PathUtil.getLocalFile(classesRoot).path, "/")
                         root.addOrFindChild(child)
-                        classpath.addAll(ManifestFileUtil.getClasspathForElements(listOf(child), artifactManager.resolvingContext, PlainArtifactType.getInstance()))
                     }
                 }
-
             } else {
                 val children = factory.createLibraryElements(library)
-                classpath.addAll(ManifestFileUtil.getClasspathForElements(children, artifactManager.resolvingContext, PlainArtifactType.getInstance()))
                 root.addOrFindChildren(children)
             }
         }
@@ -170,6 +190,8 @@ class ArtifactGenProjectComponent(val project: Project,
 
     override fun getComponentName() = "ArtifactGen"
 }
+
+private fun Module.jarName() = "${ArtifactUtil.suggestArtifactFileName(this.name)}.jar"
 
 
 class AGArtifactPropertiesProvider : ArtifactPropertiesProvider("ag-preprocessing") {
