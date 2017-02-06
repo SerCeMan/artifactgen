@@ -191,7 +191,7 @@ class AGProjectComponent(val project: Project,
     override fun getComponentName() = "ArtifactGen"
 }
 
-private fun Module.jarName() = "${ArtifactUtil.suggestArtifactFileName(this.name)}.jar"
+private fun Module.jarName() = "${ArtifactUtil.suggestArtifactFileName(this.name)}-1.0.0-SNAPSHOT.jar"
 
 
 class AGArtifactPropertiesProvider : ArtifactPropertiesProvider("ag-preprocessing") {
