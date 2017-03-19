@@ -7,7 +7,6 @@ import com.intellij.openapi.components.AbstractProjectComponent
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
-import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.ModuleAdapter
@@ -34,7 +33,7 @@ import javax.swing.JLabel
 import javax.swing.SwingUtilities
 
 
-class Options() {
+class Options {
     var enabled: Boolean = false
     var modules: List<ModuleDef> = arrayListOf()
     var preprocessing: List<ModuleArtifactProps> = arrayListOf()
@@ -43,6 +42,7 @@ class Options() {
 class ModuleDef {
     var name: String = ""
     var output: String? = null
+    var exclude: List<String>? = arrayListOf()
 }
 
 @State(name = "ArtifactGen", storages = arrayOf(Storage("artifactgen.xml")))
@@ -53,7 +53,6 @@ class AGProjectComponent(val project: Project,
                          val factory: PackagingElementFactory) :
         AbstractProjectComponent(project), PersistentStateComponent<Options> {
 
-    val LOG = Logger.getInstance(javaClass)
     val modulesProvider = DefaultModulesProvider.createForProject(project)
     var connection: MessageBusConnection? = null
     var options = Options()
@@ -69,7 +68,7 @@ class AGProjectComponent(val project: Project,
             if (state.enabled) {
                 for (moduleDef in state.modules) {
                     val module = moduleManager.modules.find { it.name == moduleDef.name }
-                    if(module != null) {
+                    if (module != null) {
                         rebuildArtifactDef(moduleDef, module)
                     }
                 }
@@ -104,19 +103,31 @@ class AGProjectComponent(val project: Project,
                 .runtimeOnly()
                 .recursively().apply {
 
-            forEachLibrary(CommonProcessors.CollectProcessor(libraries))
+            forEachLibrary(object: CommonProcessors.CollectProcessor<Library>(libraries) {
+                override fun accept(t: Library?): Boolean {
+                    val excluded = def.exclude
+                    if(t == null || excluded == null) {
+                        return true
+                    }
+                    return !excluded.contains(t.name)
+                }
+            })
 
             forEachModule { module ->
                 if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, module)) {
-                    val moduleArchive = factory.createArchive(module.jarName())
-                    moduleArchive.addOrFindChild(factory.createModuleOutput(module))
-                    root.addOrFindChild(moduleArchive)
+                    val excluded = def.exclude ?: emptyList()
+                    if (!excluded.contains(module.name)) {
 
-                    state.preprocessing
-                            .filter { it.name == module.name }
-                            .forEach {
-                                includePreprocessing.add(it)
-                            }
+                        val moduleArchive = factory.createArchive(module.jarName())
+                        moduleArchive.addOrFindChild(factory.createModuleOutput(module))
+                        root.addOrFindChild(moduleArchive)
+
+                        state.preprocessing
+                                .filter { it.name == module.name }
+                                .forEach {
+                                    includePreprocessing.add(it)
+                                }
+                    }
                 }
                 true
             }
@@ -132,9 +143,12 @@ class AGProjectComponent(val project: Project,
             object : WriteAction<Unit>() {
                 override fun run(result: Result<Unit>) {
                     val artifactModel = artifactManager.createModifiableModel()
+
+                    // remove previously created artifact instead of adding one more with the same name
                     artifactModel.artifacts
                             .filter { it.name == artifactName }
                             .forEach { artifactModel.removeArtifact(it) }
+
                     val artifact = artifactModel.addArtifact(config.artifactName, config.artifactType, config.rootElement)
                     artifact.isBuildOnMake = true
 
