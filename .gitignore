@@ -2,6 +2,7 @@
 .idea
 *.iws
 /out/
+jps-plugin/out/
 .sandbox
 
 ### Java ###

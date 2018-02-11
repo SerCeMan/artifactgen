@@ -113,17 +113,20 @@ class AGProjectComponent(val project: Project,
                 }
             })
 
-            forEachModule { module ->
-                if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, module)) {
+            forEachModule { dependencyModule ->
+                if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, dependencyModule)) {
                     val excluded = def.exclude ?: emptyList()
-                    if (!excluded.contains(module.name)) {
+                    if (!excluded.contains(dependencyModule.name)) {
 
-                        val moduleArchive = factory.createArchive(module.jarName())
-                        moduleArchive.addOrFindChild(factory.createModuleOutput(module))
-                        root.addOrFindChild(moduleArchive)
+                        val moduleArchive = factory.createArchive(dependencyModule.jarName())
+                        moduleArchive.addOrFindChild(factory.createModuleOutput(dependencyModule))
+                        if (dependencyModule.name != module.name) {
+                            // do not add ourselves as a dependency
+                            root.addOrFindChild(moduleArchive)
+                        }
 
                         state.preprocessing
-                                .filter { it.name == module.name }
+                                .filter { it.name == dependencyModule.name }
                                 .forEach {
                                     includePreprocessing.add(it)
                                 }
