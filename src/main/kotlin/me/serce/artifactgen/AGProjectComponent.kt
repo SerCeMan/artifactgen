@@ -122,11 +122,6 @@ class AGProjectComponent(val project: Project,
                         if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, dependencyModule)) {
                             val excluded = def.exclude ?: emptyList()
                             if (!excluded.contains(dependencyModule.name)) {
-
-                                if (dependencyModule.name.contains("afe")) {
-                                    var a = 0;
-                                    a++;
-                                }
                                 val depMvnModule = MavenProjectsManager.getInstance(project).findProject(dependencyModule)
                                 val moduleArchive = factory.createArchive(dependencyModule.jarName(mvnModule, depMvnModule))
                                 moduleArchive.addOrFindChild(factory.createModuleOutput(dependencyModule))
