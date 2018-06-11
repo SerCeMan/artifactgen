@@ -27,6 +27,9 @@ import com.intellij.packaging.ui.ArtifactPropertiesEditor
 import com.intellij.util.CommonProcessors
 import com.intellij.util.PathUtil
 import com.intellij.util.messages.MessageBusConnection
+import org.jetbrains.idea.maven.model.MavenArtifact
+import org.jetbrains.idea.maven.project.MavenProject
+import org.jetbrains.idea.maven.project.MavenProjectsManager
 import java.io.File
 import java.util.*
 import javax.swing.JLabel
@@ -90,9 +93,11 @@ class AGProjectComponent(val project: Project,
     }
 
     private fun rebuildArtifactDef(def: ModuleDef, module: Module) {
+        val mavenProjectsManager = MavenProjectsManager.getInstance(module.project)
+        val mvnModule: MavenProject? = mavenProjectsManager.findProject(module)
         val name = module.name
 
-        val archive = factory.createArchive(module.jarName())
+        val archive = factory.createArchive(module.simpleName())
         val orderEnumerator = projectRootManager.orderEntries(listOf(module)).productionOnly()
         val includePreprocessing = ArrayList<ModuleArtifactProps>()
         val root = factory.createArtifactRootElement()
@@ -103,38 +108,43 @@ class AGProjectComponent(val project: Project,
                 .runtimeOnly()
                 .recursively().apply {
 
-            forEachLibrary(object: CommonProcessors.CollectProcessor<Library>(libraries) {
-                override fun accept(t: Library?): Boolean {
-                    val excluded = def.exclude
-                    if(t == null || excluded == null) {
-                        return true
-                    }
-                    return !excluded.contains(t.name)
-                }
-            })
-
-            forEachModule { dependencyModule ->
-                if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, dependencyModule)) {
-                    val excluded = def.exclude ?: emptyList()
-                    if (!excluded.contains(dependencyModule.name)) {
-
-                        val moduleArchive = factory.createArchive(dependencyModule.jarName())
-                        moduleArchive.addOrFindChild(factory.createModuleOutput(dependencyModule))
-                        if (dependencyModule.name != module.name) {
-                            // do not add ourselves as a dependency
-                            root.addOrFindChild(moduleArchive)
+                    forEachLibrary(object : CommonProcessors.CollectProcessor<Library>(libraries) {
+                        override fun accept(t: Library?): Boolean {
+                            val excluded = def.exclude
+                            if (t == null || excluded == null) {
+                                return true
+                            }
+                            return !excluded.contains(t.name)
                         }
+                    })
 
-                        state.preprocessing
-                                .filter { it.name == dependencyModule.name }
-                                .forEach {
-                                    includePreprocessing.add(it)
+                    forEachModule { dependencyModule ->
+                        if (ProductionModuleOutputElementType.ELEMENT_TYPE.isSuitableModule(modulesProvider, dependencyModule)) {
+                            val excluded = def.exclude ?: emptyList()
+                            if (!excluded.contains(dependencyModule.name)) {
+
+                                if (dependencyModule.name.contains("afe")) {
+                                    var a = 0;
+                                    a++;
                                 }
+                                val depMvnModule = MavenProjectsManager.getInstance(project).findProject(dependencyModule)
+                                val moduleArchive = factory.createArchive(dependencyModule.jarName(mvnModule, depMvnModule))
+                                moduleArchive.addOrFindChild(factory.createModuleOutput(dependencyModule))
+                                if (dependencyModule.name != module.name) {
+                                    // do not add ourselves as a dependency
+                                    root.addOrFindChild(moduleArchive)
+                                }
+
+                                state.preprocessing
+                                        .filter { it.name == dependencyModule.name }
+                                        .forEach {
+                                            includePreprocessing.add(it)
+                                        }
+                            }
+                        }
+                        true
                     }
                 }
-                true
-            }
-        }
 
         root.addOrFindChild(archive)
         addLibraries(libraries, root, archive)
@@ -208,7 +218,21 @@ class AGProjectComponent(val project: Project,
     override fun getComponentName() = "ArtifactGen"
 }
 
-private fun Module.jarName() = "${ArtifactUtil.suggestArtifactFileName(this.name)}-1.0.0-SNAPSHOT.jar"
+private fun Module.simpleName() = "${ArtifactUtil.suggestArtifactFileName(this.name)}-1.0.0-SNAPSHOT.jar"
+private fun Module.jarName(mvnModule: MavenProject?, depMvnModule: MavenProject?): String {
+    if (mvnModule == null || depMvnModule == null) {
+        return simpleName()
+    }
+    val dep: MavenArtifact? = mvnModule.findDependencies(depMvnModule).firstOrNull()
+    if (dep == null) {
+        return simpleName()
+    }
+    val name = StringBuilder("${dep.artifactId}-${dep.version}")
+    if (dep.classifier == "classes") {
+        name.append("-${dep.classifier}")
+    }
+    return name.append(".jar").toString()
+}
 
 
 class AGArtifactPropertiesProvider : ArtifactPropertiesProvider("ag-preprocessing") {

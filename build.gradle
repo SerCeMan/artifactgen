@@ -41,6 +41,8 @@ allprojects {
 
         sandboxDirectory project.rootDir.canonicalPath + "/.sandbox"
         systemProperties = ['compiler.process.debug.port': '21232']
+
+        plugins 'maven'
     }
 
     dependencies {
